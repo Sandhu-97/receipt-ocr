@@ -97,7 +97,7 @@ async def require_user(authorization: str | None = Header(default=None)) -> str:
 
 @app.get("/health")
 def health() -> dict[str, bool | str]:
-    return {"ok": True, "version": "1.0"}
+    return {"ok": True, "version": "1.1"}
 
 
 @app.post("/extract")
