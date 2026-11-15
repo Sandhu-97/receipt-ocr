@@ -45,7 +45,12 @@ Use this exact JSON structure:
 }
 """
 
-app = FastAPI(title="Cold store receipt extractor")
+app = FastAPI(
+    title="Cold store receipt extractor",
+    openapi_url=None,
+    docs_url=None,
+    redoc_url=None,
+)
 app.add_middleware(
     CORSMiddleware,
     # The Firebase ID token is the guard; CORS is not a security boundary here.
@@ -65,6 +70,11 @@ async def require_user(authorization: str | None = Header(default=None)) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Sign in required")
 
+    token = authorization.removeprefix("Bearer ")
+    # Firebase ID tokens are JWTs; reject junk before spending a Google lookup.
+    if token.count(".") != 2:
+        raise HTTPException(401, "Invalid session")
+
     api_key = os.environ.get("FIREBASE_API_KEY", "")
     if not api_key:
         raise HTTPException(500, "FIREBASE_API_KEY is not set")
@@ -73,7 +83,7 @@ async def require_user(authorization: str | None = Header(default=None)) -> str:
         lookup = await client.post(
             LOOKUP_URL,
             params={"key": api_key},
-            json={"idToken": authorization.removeprefix("Bearer ")},
+            json={"idToken": token},
         )
 
     try:

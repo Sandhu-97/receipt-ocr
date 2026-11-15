@@ -53,6 +53,26 @@ def test_rejects_a_missing_token() -> None:
     assert response.status_code == 401
 
 
+def test_rejects_a_non_jwt_token_without_calling_google(monkeypatch) -> None:
+    def no_lookup(*_args, **_kwargs):
+        pytest.fail("Firebase lookup must not be called")
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", no_lookup)
+
+    response = client.post(
+        "/extract",
+        json={"imageBase64": "aGk=", "mediaType": "image/jpeg"},
+        headers={"Authorization": "Bearer junk"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_docs_and_openapi_are_not_exposed() -> None:
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert client.get(path).status_code == 404, path
+
+
 def test_rejects_an_unsupported_image_type() -> None:
     _allow_auth()
     response = client.post(
