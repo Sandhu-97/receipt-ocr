@@ -20,7 +20,7 @@ Authorization: Bearer <Firebase ID token>
 502 DeepSeek request failed
 ```
 
-`GET /health` returns `{"ok": true}`.
+`GET /health` returns `{"ok": true, "version": "1.0"}`.
 Before contacting DeepSeek, `/extract` runs local Tesseract OCR. The image passes
 if OCR finds any one of “GOOD RECEIPT VOUCHER”, “GOOD DELIVERY VOUCHER”, “cold
 storage” or “cold store” (case/punctuation-insensitive, allowing up to two
