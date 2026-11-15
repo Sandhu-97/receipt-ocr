@@ -1,9 +1,12 @@
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("FIREBASE_API_KEY", "test-key")
 
 import main
+import receipt_precheck
 from fastapi.testclient import TestClient
+import pytest
 
 client = TestClient(main.app)
 
@@ -62,6 +65,7 @@ def test_returns_the_model_summary(monkeypatch) -> None:
     _allow_auth()
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     monkeypatch.setattr(main, "OpenAI", _FakeOpenAI)
+    monkeypatch.setattr(main, "is_receipt_image", lambda _image: True)
 
     response = client.post(
         "/extract", json={"imageBase64": "aGk=", "mediaType": "image/jpeg"}
@@ -69,3 +73,87 @@ def test_returns_the_model_summary(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"summary": '{"receipt_number": "42"}'}
+
+
+def test_rejects_an_unconfirmed_receipt_before_calling_deepseek(monkeypatch) -> None:
+    _allow_auth()
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setattr(main, "is_receipt_image", lambda _image: False)
+    monkeypatch.setattr(
+        main, "OpenAI", lambda **_kwargs: pytest.fail("DeepSeek must not be called")
+    )
+
+    response = client.post(
+        "/extract", json={"imageBase64": "aGk=", "mediaType": "image/jpeg"}
+    )
+
+    assert response.status_code == 422
+
+
+def test_returns_503_when_tesseract_is_unavailable(monkeypatch) -> None:
+    _allow_auth()
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+
+    def missing_tesseract(*_args, **_kwargs):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(receipt_precheck.subprocess, "run", missing_tesseract)
+
+    response = client.post(
+        "/extract", json={"imageBase64": "aGk=", "mediaType": "image/jpeg"}
+    )
+
+    assert response.status_code == 503
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "GOOD RECEIPT VOUCHER",
+        "GOOD DELIVERY VOUCHER",
+        "COLD STORAGE",
+        "COLD STORE",
+        "GOOD RECEIPT V0UCH3R",
+    ],
+)
+def test_receipt_precheck_accepts_any_single_marker(
+    monkeypatch, capsys, text: str
+) -> None:
+    monkeypatch.setattr(
+        receipt_precheck.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout=text.encode()
+        ),
+    )
+
+    assert receipt_precheck.is_receipt_image(b"image-bytes")
+    assert "score=" in capsys.readouterr().out
+
+
+def test_receipt_precheck_rejects_text_without_any_marker(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        receipt_precheck.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout=b"Potato delivery"
+        ),
+    )
+
+    assert not receipt_precheck.is_receipt_image(b"image-bytes")
+    assert capsys.readouterr().out.count("score=") == 4
+
+
+def test_receipt_precheck_rejects_more_than_two_ocr_errors() -> None:
+    assert receipt_precheck._best_marker_distance(
+        "goodreceiptvxxxher", "good receipt voucher"
+    ) > receipt_precheck.MAX_MARKER_EDITS
+
+
+def test_best_marker_distance_scores_normalized_text() -> None:
+    assert (
+        receipt_precheck._best_marker_distance(
+            "GOOD RECEIPT V0UCH3R", "good receipt voucher"
+        )
+        == 2
+    )

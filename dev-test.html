@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Receipt OCR local test</title>
+    <style>
+      body { font: 16px system-ui, sans-serif; margin: 2rem auto; max-width: 38rem; padding: 0 1rem; }
+      label { display: block; margin: 1rem 0; }
+      input { display: block; margin-top: .35rem; max-width: 100%; }
+      button { padding: .5rem .8rem; }
+      pre { background: #f3f3f3; overflow-wrap: anywhere; padding: 1rem; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h1>Receipt OCR local test</h1>
+    <p>Requests go to the local API at <code>127.0.0.1:8000</code>.</p>
+    <form id="extract-form">
+      <label>
+        Firebase ID token
+        <input id="token" type="password" autocomplete="off" required />
+      </label>
+      <label>
+        Receipt image
+        <input
+          id="image"
+          type="file"
+          accept="image/jpeg,image/png,image/gif,image/webp"
+          required
+        />
+      </label>
+      <button type="submit">Check and extract</button>
+    </form>
+    <pre id="result" role="status">Choose an image and submit.</pre>
+
+    <script>
+      const form = document.querySelector("#extract-form");
+      const result = document.querySelector("#result");
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const token = document.querySelector("#token").value;
+        const file = document.querySelector("#image").files[0];
+        const button = form.querySelector("button");
+        button.disabled = true;
+        result.textContent = "Checking receipt…";
+
+        try {
+          const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(file);
+          });
+          const response = await fetch("http://127.0.0.1:8000/extract", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              imageBase64: dataUrl.split(",", 2)[1],
+              mediaType: file.type,
+            }),
+          });
+          const body = await response.json();
+          result.textContent = response.ok
+            ? body.summary
+            : `${response.status}: ${body.detail ?? JSON.stringify(body)}`;
+        } catch (error) {
+          result.textContent = `Request failed: ${error}`;
+        } finally {
+          button.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

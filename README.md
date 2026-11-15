@@ -15,10 +15,16 @@ Authorization: Bearer <Firebase ID token>
 401 missing or invalid session
 413 image larger than 9 MB
 415 media type not JPEG/PNG/GIF/WebP
+422 image is invalid or not confirmed as a cold-store receipt
+503 local receipt precheck unavailable
 502 DeepSeek request failed
 ```
 
 `GET /health` returns `{"ok": true}`.
+Before contacting DeepSeek, `/extract` runs local Tesseract OCR. The image passes
+if OCR finds any one of “GOOD RECEIPT VOUCHER”, “GOOD DELIVERY VOUCHER”, “cold
+storage” or “cold store” (case/punctuation-insensitive, allowing up to two
+character edits).
 
 ## Environment
 
@@ -30,6 +36,8 @@ Authorization: Bearer <Firebase ID token>
 
 ## Run locally
 
+Install Tesseract first (Ubuntu: `sudo apt install tesseract-ocr`), then:
+
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
@@ -37,10 +45,18 @@ DEEPSEEK_API_KEY=... FIREBASE_API_KEY=... .venv/bin/uvicorn main:app --reload
 .venv/bin/pytest
 ```
 
+For a manual check, run `python3 -m http.server 8080` in another terminal and
+open <http://127.0.0.1:8080/dev-test.html>. Enter a Firebase ID token and choose
+a receipt photo (the local `whi.jpg` or `yel.jpg` samples are handy). Confirmed
+receipts continue to DeepSeek and use the configured API key.
+
 ## Deploy on the Oracle VM
 
 1. Clone to `/home/ubuntu/receipt-ocr`, create the venv and install
-   `requirements.txt`.
+   `requirements.txt`. Install Tesseract as well:
+   ```bash
+   sudo apt install tesseract-ocr
+   ```
 2. Write `/etc/receipt-ocr.env` with the two keys, then `sudo chmod 600` it.
 3. Install the unit:
    ```bash

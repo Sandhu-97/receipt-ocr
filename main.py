@@ -1,5 +1,7 @@
 """Receipt extraction for the cold store app, over the DeepSeek vision API."""
 
+import base64
+import binascii
 import os
 
 import httpx
@@ -8,8 +10,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI, OpenAIError
 from pydantic import BaseModel
 
+from debug_log import log
+from receipt_precheck import is_receipt_image
+
 BASE_URL = "https://api.deepseek.com"
-MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
+MODEL = "deepseek-flash"
 SUPPORTED_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_BASE64_CHARS = 12_000_000  # ~9 MB of image
 LOOKUP_URL = "https://identitytoolkit.googleapis.com/v1/accounts:lookup"
@@ -88,6 +93,10 @@ def health() -> dict[str, bool]:
 @app.post("/extract")
 def extract(payload: ExtractRequest, _uid: str = Depends(require_user)) -> dict[str, str]:
     media_type = payload.mediaType.lower()
+    log(
+        f"[extract] received image: media_type={media_type}, "
+        f"base64_chars={len(payload.imageBase64)}"
+    )
     if media_type not in SUPPORTED_TYPES:
         raise HTTPException(415, "Use a JPEG, PNG, GIF or WebP photo")
     if len(payload.imageBase64) > MAX_BASE64_CHARS:
@@ -97,7 +106,17 @@ def extract(payload: ExtractRequest, _uid: str = Depends(require_user)) -> dict[
     if not api_key:
         raise HTTPException(500, "DEEPSEEK_API_KEY is not set")
 
+    try:
+        image = base64.b64decode(payload.imageBase64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        log("[extract] invalid base64 image data")
+        raise HTTPException(422, "Invalid image data") from exc
+    if not is_receipt_image(image):
+        log("[extract] rejected by receipt precheck")
+        raise HTTPException(422, "Image is not a confirmed cold-store receipt")
+
     data_url = f"data:{media_type};base64,{payload.imageBase64}"
+    log("[extract] receipt confirmed; sending to DeepSeek")
     try:
         response = OpenAI(api_key=api_key, base_url=BASE_URL, timeout=90).chat.completions.create(
             model=MODEL,
@@ -113,6 +132,8 @@ def extract(payload: ExtractRequest, _uid: str = Depends(require_user)) -> dict[
             ],
         )
     except OpenAIError as exc:
+        log(f"[extract] DeepSeek request failed: {type(exc).__name__}")
         raise HTTPException(502, f"DeepSeek request failed: {exc}") from exc
 
+    log("[extract] DeepSeek response received")
     return {"summary": response.choices[0].message.content or ""}
