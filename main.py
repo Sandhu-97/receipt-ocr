@@ -14,7 +14,7 @@ from debug_log import log
 from receipt_precheck import is_receipt_image
 
 BASE_URL = "https://api.deepseek.com"
-MODEL = "deepseek-flash"
+MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
 SUPPORTED_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_BASE64_CHARS = 12_000_000  # ~9 MB of image
 LOOKUP_URL = "https://identitytoolkit.googleapis.com/v1/accounts:lookup"
