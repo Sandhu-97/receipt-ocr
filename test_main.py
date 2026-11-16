@@ -44,6 +44,8 @@ def _allow_auth() -> None:
 
 def setup_function() -> None:
     main.app.dependency_overrides.clear()
+    with main._user_requests_lock:
+        main._user_requests.clear()
 
 
 def test_rejects_a_missing_token() -> None:
@@ -73,12 +75,53 @@ def test_docs_and_openapi_are_not_exposed() -> None:
         assert client.get(path).status_code == 404, path
 
 
+@pytest.mark.parametrize("origin", main.ALLOWED_ORIGINS)
+def test_cors_allows_configured_web_origins(origin: str) -> None:
+    allowed = client.options(
+        "/extract",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+
+    assert allowed.status_code == 200
+    assert allowed.headers["access-control-allow-origin"] == origin
+
+
+def test_cors_rejects_other_web_origins() -> None:
+    denied = client.options(
+        "/extract",
+        headers={
+            "Origin": "https://attacker.example",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+
+    assert denied.status_code == 400
+    assert "access-control-allow-origin" not in denied.headers
+
+
 def test_rejects_an_unsupported_image_type() -> None:
     _allow_auth()
     response = client.post(
         "/extract", json={"imageBase64": "aGk=", "mediaType": "image/heic"}
     )
     assert response.status_code == 415
+
+
+def test_limits_extraction_requests_per_authenticated_user() -> None:
+    _allow_auth()
+    payload = {"imageBase64": "", "mediaType": "image/heic"}
+
+    for _ in range(main.USER_REQUESTS_PER_MINUTE):
+        assert client.post("/extract", json=payload).status_code == 415
+
+    limited = client.post("/extract", json=payload)
+    assert limited.status_code == 429
+    assert int(limited.headers["retry-after"]) > 0
 
 
 def test_returns_the_model_summary(monkeypatch) -> None:

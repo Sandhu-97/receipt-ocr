@@ -1,87 +1,65 @@
-# receipt-ocr
+# Receipt OCR
 
-FastAPI service that reads a cold-store receipt photo with the DeepSeek vision
-API and returns the structured JSON the Flutter app parses. Images are not
-stored.
+A small FastAPI service that extracts structured information from receipt
+images. It authenticates requests with Firebase and uses DeepSeek for image
+processing. Images are not stored.
 
-## Contract
+## API
 
-```
-POST /extract
-Authorization: Bearer <Firebase ID token>
-{ "imageBase64": "...", "mediaType": "image/jpeg" }
+- `POST /extract` — requires `Authorization: Bearer <Firebase ID token>`.
+- `GET /health` — basic service health check.
 
-200 { "summary": "<JSON string>" }
-401 missing or invalid session
-413 image larger than 9 MB
-415 media type not JPEG/PNG/GIF/WebP
-422 image is invalid or not confirmed as a cold-store receipt
-503 local receipt precheck unavailable
-502 DeepSeek request failed
+Example request:
+
+```json
+{
+  "imageBase64": "<base64-encoded image>",
+  "mediaType": "image/jpeg"
+}
 ```
 
-`GET /health` returns `{"ok": true, "version": "1.1"}`.
-Before contacting DeepSeek, `/extract` runs local Tesseract OCR. The image passes
-if OCR finds any one of “GOOD RECEIPT VOUCHER”, “GOOD DELIVERY VOUCHER”, “cold
-storage” or “cold store” (case/punctuation-insensitive, allowing up to two
-character edits).
-
-## Environment
-
-| Variable | Required | Notes |
-|---|---|---|
-| `DEEPSEEK_API_KEY` | yes | server-only, never shipped to the browser |
-| `FIREBASE_API_KEY` | yes | the public web key from the app's `firebase_options.dart` |
-| `DEEPSEEK_MODEL` | no | defaults to `deepseek-flash` |
+The extraction response contains a `summary` field with the result.
 
 ## Run locally
 
-Install Tesseract first (Ubuntu: `sudo apt install tesseract-ocr`), then:
+Install Tesseract, then install the Python dependencies and start the service:
 
 ```bash
+sudo apt install tesseract-ocr
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
 DEEPSEEK_API_KEY=... FIREBASE_API_KEY=... .venv/bin/uvicorn main:app --reload
+```
+
+Run the tests with:
+
+```bash
 .venv/bin/pytest
 ```
 
-For a manual check, run `python3 -m http.server 8080` in another terminal and
-open <http://127.0.0.1:8080/dev-test.html>. Enter a Firebase ID token and choose
-a receipt photo (the local `whi.jpg` or `yel.jpg` samples are handy). Confirmed
-receipts continue to DeepSeek and use the configured API key.
+## Deploy
 
-## Deploy on the Oracle VM
+The service runs behind Caddy and listens only on localhost. Keep the
+environment file outside the project directory and restrict its permissions:
 
-1. Clone to `/home/ubuntu/receipt-ocr`, create the venv and install
-   `requirements.txt`. Install Tesseract as well:
-   ```bash
-   sudo apt install tesseract-ocr
-   ```
-2. Write `/etc/receipt-ocr.env` with the two keys, then `sudo chmod 600` it.
-3. Install the unit:
-   ```bash
-   sudo cp receipt-ocr.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now receipt-ocr
-   ```
-   Change `User`/`WorkingDirectory` if the VM image uses `opc` instead of
-   `ubuntu`.
-4. Add an `A` record `ocr` pointing at the VM's public IP.
-5. Add to the Caddyfile and reload Caddy:
-   ```
-   ocr.daanveersingh.com {
-       reverse_proxy 127.0.0.1:8000
-   }
-   ```
-6. Check `curl https://ocr.daanveersingh.com/health`.
+```bash
+sudo chmod 600 /etc/receipt-ocr.env
+sudo cp receipt-ocr.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now receipt-ocr
+```
 
-The service listens on `127.0.0.1:8000` only; Caddy is the public listener and
-handles TLS.
 
-## Security
+Validate and reload Caddy after changing its configuration:
 
-- The DeepSeek key lives only in `/etc/receipt-ocr.env` (and local `.env` files).
-- Every `/extract` call needs a Firebase ID token, checked against Google's
-  Identity Toolkit. A leaked endpoint URL is not enough to use the API.
-- Use a dedicated DeepSeek key with a small balance and rotate it if the VM is
-  compromised.
+```bash
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+```
+
+## Configuration and security
+
+- Set `DEEPSEEK_API_KEY` and `FIREBASE_API_KEY`
+- Browser CORS is limited to the production web app origins. CORS is not
+  authentication; `/extract` still requires a valid Firebase ID token.
+- `/extract` allows 10 requests per authenticated user per minute

@@ -3,6 +3,10 @@
 import base64
 import binascii
 import os
+import threading
+import time
+from collections import deque
+from math import ceil
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -18,6 +22,15 @@ MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash")
 SUPPORTED_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_BASE64_CHARS = 12_000_000  # ~9 MB of image
 LOOKUP_URL = "https://identitytoolkit.googleapis.com/v1/accounts:lookup"
+ALLOWED_ORIGINS = [
+    "https://coldstore.daanveersingh.com",
+    "https://cold-store-app-d09b3.web.app",
+]
+USER_REQUESTS_PER_MINUTE = 10
+RATE_LIMIT_WINDOW_SECONDS = 60
+_user_requests: dict[str, deque[float]] = {}
+_user_requests_lock = threading.Lock()
+_last_rate_limit_cleanup = 0.0
 
 SYSTEM_PROMPT = "You summarise images. Describe only what is visible; do not invent details."
 
@@ -53,8 +66,8 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    # The Firebase ID token is the guard; CORS is not a security boundary here.
-    allow_origins=["*"],
+    # CORS limits browser origins; Firebase ID tokens remain the access control.
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
@@ -95,13 +108,45 @@ async def require_user(authorization: str | None = Header(default=None)) -> str:
     return users[0]["localId"]
 
 
+async def require_rate_limit(uid: str = Depends(require_user)) -> str:
+    """Limit expensive extraction requests per authenticated Firebase user."""
+    global _last_rate_limit_cleanup
+
+    now = time.monotonic()
+    with _user_requests_lock:
+        requests = _user_requests.setdefault(uid, deque())
+        while requests and now - requests[0] >= RATE_LIMIT_WINDOW_SECONDS:
+            requests.popleft()
+        if len(requests) >= USER_REQUESTS_PER_MINUTE:
+            retry_after = ceil(RATE_LIMIT_WINDOW_SECONDS - (now - requests[0]))
+            raise HTTPException(
+                429,
+                "Too many extraction requests; try again shortly",
+                headers={"Retry-After": str(max(1, retry_after))},
+            )
+        requests.append(now)
+
+        # shortcut: process-local limits reset on restart and are not shared across workers; use shared storage before scaling beyond one worker.
+        if now - _last_rate_limit_cleanup >= RATE_LIMIT_WINDOW_SECONDS:
+            for user_id, timestamps in list(_user_requests.items()):
+                while timestamps and now - timestamps[0] >= RATE_LIMIT_WINDOW_SECONDS:
+                    timestamps.popleft()
+                if not timestamps:
+                    del _user_requests[user_id]
+            _last_rate_limit_cleanup = now
+
+    return uid
+
+
 @app.get("/health")
 def health() -> dict[str, bool | str]:
-    return {"ok": True, "version": "1.1"}
+    return {"ok": True, "version": "1.2"}
 
 
 @app.post("/extract")
-def extract(payload: ExtractRequest, _uid: str = Depends(require_user)) -> dict[str, str]:
+def extract(
+    payload: ExtractRequest, _uid: str = Depends(require_rate_limit)
+) -> dict[str, str]:
     media_type = payload.mediaType.lower()
     log(
         f"[extract] received image: media_type={media_type}, "
